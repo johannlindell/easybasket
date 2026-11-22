@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Easy Basket – spelschema</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --muted:#6b7280; --line:#e3e6ea; --accent:#e8590c; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header, main { max-width:1100px; margin:0 auto; padding:16px; }
+  header { display:flex; gap:16px; align-items:flex-start; justify-content:space-between; }
+  h1 { margin:0; font-size:1.5rem; }
+  h2 { font-size:1.15rem; margin:24px 0 8px; }
+  .muted { color:var(--muted); }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0 16px; }
+  select, button { font:inherit; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card); }
+  select { flex:1; min-width:0; max-width:420px; }
+  button { cursor:pointer; }
+  .warn { background:#fff3cd; border:1px solid #e0c36a; padding:8px 12px; border-radius:8px; white-space:pre-line; }
+
+  .chip { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:6px; border:1px solid rgba(0,0,0,.12); }
+  .chip img { width:18px; height:18px; object-fit:contain; }
+
+  .cards { display:grid; gap:10px; grid-template-columns:repeat(auto-fill, minmax(260px,1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-left:6px solid var(--accent); border-radius:10px; padding:12px 14px; }
+  .card .time { font-size:1.6rem; font-weight:700; }
+  .card .where { font-weight:600; }
+
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; background:var(--card); font-size:.85rem; }
+  th, td { border:1px solid var(--line); padding:4px 6px; text-align:left; vertical-align:top; }
+  th { background:#eef0f3; white-space:nowrap; }
+  td.t { font-weight:600; white-space:nowrap; }
+  td .chip { display:flex; margin:2px 0; }
+  .dim .chip:not(.me) { opacity:.25; }
+  .chip.me { outline:3px solid var(--ink); }
+
+  #qr { display:none; text-align:center; font-size:.7rem; }
+  #qr svg { width:110px; height:110px; display:block; margin:0 auto; }
+
+  @media print {
+    @page { size:landscape; margin:10mm; }
+    body { background:#fff; font-size:12px; }
+    .controls, .warn { display:none; }
+    #qr { display:block; }
+    header, main { max-width:none; padding:0; }
+    * { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    .card { break-inside:avoid; }
+    .chip.me { outline-width:2px; }
+    .has-team .full { display:none; } /* lagets lapp = bara lagets matcher + QR */
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1 id="title">Easy Basket</h1>
+    <div id="date" class="muted"></div>
+  </div>
+  <div id="qr"></div>
+</header>
+<main>
+  <div class="controls">
+    <select id="team"><option value="">Välj ditt lag…</option></select>
+    <button onclick="print()">Skriv ut</button>
+  </div>
+  <div id="warn"></div>
+  <section id="mine"></section>
+  <section class="full">
+    <h2>Hela schemat</h2>
+    <div class="scroll"><table id="grid"></table></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ink = hex => { // svart eller vit text beroende på bakgrundens ljushet
+  const n = parseInt(hex.slice(1), 16), r = n >> 16, g = n >> 8 & 255, b = n & 255;
+  return (0.299*r + 0.587*g + 0.114*b) > 150 ? '#000' : '#fff';
+};
+
+// Fångar skrivfel i schema.json: okända lag/banor och lag som spelar två matcher samtidigt.
+function validate(d) {
+  const teams = new Set(d.teams.map(t => t.name)), courts = new Set(d.courts.map(c => c.id));
+  const errs = [], busy = new Set(), slot = new Set();
+  for (const m of d.matches) {
+    if (!courts.has(m.court)) errs.push(`Okänd bana "${m.court}" kl ${m.start}`);
+    if (slot.has(m.start + m.court)) errs.push(`Två matcher på bana ${m.court} kl ${m.start}`);
+    slot.add(m.start + m.court);
+    for (const t of [m.home, m.away]) {
+      if (!teams.has(t)) errs.push(`Okänt lag "${t}" kl ${m.start}`);
+      if (busy.has(m.start + t)) errs.push(`${t} spelar två matcher kl ${m.start}`);
+      busy.add(m.start + t);
+    }
+  }
+  return errs;
+}
+
+fetch('schema.json').then(r => r.json()).then(d => {
+  const team = Object.fromEntries(d.teams.map(t => [t.name, t]));
+  const court = Object.fromEntries(d.courts.map(c => [c.id, c]));
+  const chip = (name, me) => {
+    const t = team[name] || { color:'#fff' };
+    const logo = t.logo ? `<img src="${esc(t.logo)}" alt="">` : '';
+    return `<span class="chip${name === me ? ' me' : ''}" style="background:${t.color};color:${ink(t.color)}">${logo}${esc(name)}</span>`;
+  };
+
+  document.title = d.title;
+  $('title').textContent = d.title;
+  $('date').textContent = new Date(d.date).toLocaleDateString('sv-SE', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+
+  const errs = validate(d);
+  if (errs.length) $('warn').innerHTML = `<p class="warn">Fel i schema.json:\n${esc(errs.join('\n'))}</p>`;
+
+  // Lagväljare grupperad per klass
+  const classes = [...new Set(d.teams.map(t => t.class))];
+  $('team').innerHTML += classes.map(c => `<optgroup label="${esc(c)}">` +
+    d.teams.filter(t => t.class === c).map(t => `<option>${esc(t.name)}</option>`).join('') + '</optgroup>').join('');
+
+  function render(me) {
+    $('team').value = me;
+    const mine = d.matches.filter(m => m.home === me || m.away === me).sort((a, b) => a.start.localeCompare(b.start));
+    $('mine').innerHTML = !me ? '' : `<h2>${chip(me)} – ${mine.length} matcher</h2><div class="cards">` + mine.map(m => {
+      const c = court[m.court], opp = m.home === me ? m.away : m.home;
+      return `<div class="card"><div class="time">${esc(m.start)}</div>
+        <div class="where">${esc(c.name)} · ${esc(c.hall)}</div>
+        <div>mot ${chip(opp)}</div>
+        <div class="muted">${esc(m.class)}, ${esc(m.rules)}</div></div>`;
+    }).join('') + '</div>';
+
+    const times = [...new Set(d.matches.map(m => m.start))].sort();
+    $('grid').className = me ? 'dim' : '';
+    document.body.classList.toggle('has-team', !!me);
+    $('grid').innerHTML = '<tr><th>Tid</th>' + d.courts.map(c => `<th>${esc(c.name)}<br><span class="muted">${esc(c.hall)}</span></th>`).join('') + '</tr>' +
+      times.map(t => `<tr><td class="t">${esc(t)}</td>` + d.courts.map(c => {
+        const m = d.matches.find(m => m.start === t && m.court === c.id);
+        return `<td>${m ? chip(m.home, me) + chip(m.away, me) : ''}</td>`;
+      }).join('') + '</tr>').join('');
+
+    const qr = qrcode(0, 'M');
+    qr.addData(location.href);
+    qr.make();
+    $('qr').innerHTML = qr.createSvgTag({ scalable:true, margin:0 }) + (me ? 'Ditt lags schema' : 'Schemat i mobilen');
+  }
+
+  $('team').onchange = e => {
+    const me = e.target.value, url = new URL(location.href);
+    me ? url.searchParams.set('lag', me) : url.searchParams.delete('lag');
+    history.replaceState(null, '', url);
+    try { localStorage.setItem('lag', me); } catch {}
+    render(me);
+  };
+
+  let me = new URLSearchParams(location.search).get('lag');
+  if (me === null) { try { me = localStorage.getItem('lag'); } catch {} }
+  if (me && !team[me]) me = '';
+  if (me) history.replaceState(null, '', '?lag=' + encodeURIComponent(me));
+  render(me || '');
+}).catch(e => { $('warn').innerHTML = `<p class="warn">Kunde inte läsa schema.json: ${esc(e.message)}</p>`; });
+</script>
+</body>
+</html>
